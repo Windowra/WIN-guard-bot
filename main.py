@@ -36,6 +36,7 @@ async def log(action, mod, target, reason="-"):
 async def on_ready():
     await init_db()
     guild = discord.Object(id=GUILD_ID)
+    bot.tree.clear_commands(guild=guild)   # <--- PASTE THIS LINE HERE
     synced = await bot.tree.sync(guild=guild)
     print(f"Windowra Guard PRO online - {len(synced)} commands synced")
 
