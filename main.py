@@ -1,154 +1,53 @@
-import os
-import discord
-import aiosqlite
-import re
+import os, discord, aiosqlite
 from discord.ext import commands
 from datetime import datetime, timedelta
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID"))
-MOD_LOG = int(os.getenv("MOD_LOG_CHANNEL_ID"))
-WELCOME_ID = int(os.getenv("WELCOME_CHANNEL_ID"))
-LEAVE_ID = int(os.getenv("LEAVE_CHANNEL_ID"))
-AUTO_ROLE_ID = os.getenv("AUTO_ROLE_ID")
-
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-async def init_db():
-    async with aiosqlite.connect("guard.db") as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS warns (user_id INTEGER, mod_id INTEGER, reason TEXT, time TEXT)")
-        await db.commit()
-
-async def log(action, mod, target, reason="-"):
-    ch = bot.get_channel(MOD_LOG)
-    if ch:
-        e = discord.Embed(title=action, color=0x5865F2, timestamp=datetime.utcnow())
-        e.add_field(name="Mod", value=mod.mention)
-        e.add_field(name="Target", value=str(target))
-        e.add_field(name="Reason", value=reason, inline=False)
-        await ch.send(embed=e)
+TOKEN=os.getenv("DISCORD_TOKEN"); GUILD=int(os.getenv("GUILD_ID"))
+intents=discord.Intents.all(); bot=commands.Bot(command_prefix="!", intents=intents)
+g=discord.Object(id=GUILD)
 
 @bot.event
 async def on_ready():
-    await init_db()
-    guild = discord.Object(id=GUILD_ID)
-    bot.tree.clear_commands(guild=guild)
-    synced = await bot.tree.sync(guild=guild)
-    print(f"Windowra Guard PRO online - {len(synced)} commands synced")
+    await bot.tree.sync(guild=g)
+    print(f"ONLINE - {len(bot.tree.get_commands(guild=g))} commands")
 
-@bot.event
-async def on_member_join(m):
-    if AUTO_ROLE_ID and AUTO_ROLE_ID.isdigit():
-        r = m.guild.get_role(int(AUTO_ROLE_ID))
-        if r:
-            try: await m.add_roles(r)
-            except: pass
-    ch = bot.get_channel(WELCOME_ID)
-    if ch:
-        e = discord.Embed(title=f"Welcome {m.name}!", description="Read #rules", color=0x57F287)
-        e.set_thumbnail(url=m.display_avatar.url)
-        await ch.send(m.mention, embed=e)
-
-@bot.event
-async def on_member_remove(m):
-    ch = bot.get_channel(LEAVE_ID)
-    if ch:
-        e = discord.Embed(description=f"**{m}** left", color=0xED4245, timestamp=datetime.utcnow())
-        await ch.send(embed=e)
-
-SPAM = {}
-@bot.event
-async def on_message(msg):
-    if msg.author.bot or not msg.guild: return
-    now = datetime.utcnow()
-    SPAM.setdefault(msg.author.id, [])
-    SPAM[msg.author.id].append(now)
-    SPAM[msg.author.id] = [t for t in SPAM[msg.author.id] if (now-t).seconds<5]
-    if len(SPAM[msg.author.id])>5:
-        try: await msg.delete()
-        except: pass
-    await bot.process_commands(msg)
-
-g = discord.Object(id=GUILD_ID)
-
-@bot.tree.command(guild=g, description="Ban user")
-async def ban(i:discord.Interaction, member:discord.Member, reason:str="No reason"):
-    await member.ban(reason=reason); await log("BAN", i.user, member, reason); await i.response.send_message(f"Banned {member}", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Kick user")
-async def kick(i:discord.Interaction, member:discord.Member, reason:str="No reason"):
-    await member.kick(reason=reason); await log("KICK", i.user, member, reason); await i.response.send_message(f"Kicked {member}", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Timeout user")
-async def timeout(i:discord.Interaction, member:discord.Member, minutes:int, reason:str="No reason"):
-    await member.timeout(timedelta(minutes=minutes), reason=reason); await i.response.send_message(f"Timed out {minutes}m", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Untimeout")
-async def untimeout(i:discord.Interaction, member:discord.Member):
-    await member.timeout(None); await i.response.send_message("Untimed", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Purge messages")
-async def purge(i:discord.Interaction, amount:int):
-    await i.response.defer(ephemeral=True); await i.channel.purge(limit=amount); await i.followup.send(f"Deleted {amount}")
-
-@bot.tree.command(guild=g, description="Lock channel")
-async def lockdown(i:discord.Interaction):
-    await i.channel.set_permissions(i.guild.default_role, send_messages=False); await i.response.send_message("Locked")
-
-@bot.tree.command(guild=g, description="Unlock channel")
-async def unlock(i:discord.Interaction):
-    await i.channel.set_permissions(i.guild.default_role, send_messages=True); await i.response.send_message("Unlocked")
-
-@bot.tree.command(guild=g, description="Slowmode")
-async def slowmode(i:discord.Interaction, seconds:int):
-    await i.channel.edit(slowmode_delay=seconds); await i.response.send_message(f"Slowmode {seconds}s")
-
-@bot.tree.command(guild=g, description="Warn")
-async def warn(i:discord.Interaction, member:discord.Member, reason:str):
-    async with aiosqlite.connect("guard.db") as db: await db.execute("INSERT INTO warns VALUES (?,?,?,?)", (member.id, i.user.id, reason, datetime.utcnow().isoformat())); await db.commit()
-    await i.response.send_message("Warned", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Warnings")
-async def warnings(i:discord.Interaction, member:discord.Member):
-    async with aiosqlite.connect("guard.db") as db: cur=await db.execute("SELECT reason FROM warns WHERE user_id=?", (member.id,)); rows=await cur.fetchall()
-    await i.response.send_message(f"{len(rows)} warns", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Clear warns")
-async def clearwarns(i:discord.Interaction, member:discord.Member):
-    async with aiosqlite.connect("guard.db") as db: await db.execute("DELETE FROM warns WHERE user_id=?", (member.id,)); await db.commit()
-    await i.response.send_message("Cleared", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Nick")
-async def nick(i:discord.Interaction, member:discord.Member, nickname:str):
-    await member.edit(nick=nickname); await i.response.send_message("Done", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Add role")
-async def roleadd(i:discord.Interaction, member:discord.Member, role:discord.Role):
-    await member.add_roles(role); await i.response.send_message("Added", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Remove role")
-async def roleremove(i:discord.Interaction, member:discord.Member, role:discord.Role):
-    await member.remove_roles(role); await i.response.send_message("Removed", ephemeral=True)
-
-@bot.tree.command(guild=g, description="Server info")
-async def serverinfo(i:discord.Interaction):
-    gld=i.guild; e=discord.Embed(title=gld.name); await i.response.send_message(embed=e)
-
-@bot.tree.command(guild=g, description="User info")
-async def userinfo(i:discord.Interaction, member:discord.Member):
-    e=discord.Embed(title=member.name); await i.response.send_message(embed=e)
-
-@bot.tree.command(guild=g, description="Avatar")
-async def avatar(i:discord.Interaction, member:discord.Member):
-    await i.response.send_message(member.display_avatar.url)
-
-@bot.tree.command(guild=g, description="Ping")
-async def ping(i:discord.Interaction):
-    await i.response.send_message(f"{round(bot.latency*1000)}ms")
-
-@bot.tree.command(guild=g, description="Say")
-async def say(i:discord.Interaction, message:str):
-    await i.response.send_message("Sent", ephemeral=True); await i.channel.send(message)
+@bot.tree.command(guild=g) 
+async def ban(i:discord.Interaction,m:discord.Member): await m.ban(); await i.response.send_message("banned",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def kick(i:discord.Interaction,m:discord.Member): await m.kick(); await i.response.send_message("kicked",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def timeout(i:discord.Interaction,m:discord.Member,mins:int): await m.timeout(timedelta(minutes=mins)); await i.response.send_message("timed",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def untimeout(i:discord.Interaction,m:discord.Member): await m.timeout(None); await i.response.send_message("untimed",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def purge(i:discord.Interaction,n:int): await i.response.defer(ephemeral=True); await i.channel.purge(limit=n); await i.followup.send("done")
+@bot.tree.command(guild=g) 
+async def lockdown(i:discord.Interaction): await i.channel.set_permissions(i.guild.default_role,send_messages=False); await i.response.send_message("locked")
+@bot.tree.command(guild=g) 
+async def unlock(i:discord.Interaction): await i.channel.set_permissions(i.guild.default_role,send_messages=True); await i.response.send_message("unlocked")
+@bot.tree.command(guild=g) 
+async def slowmode(i:discord.Interaction,s:int): await i.channel.edit(slowmode_delay=s); await i.response.send_message("set")
+@bot.tree.command(guild=g) 
+async def warn(i:discord.Interaction,m:discord.Member): await i.response.send_message("warned",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def warnings(i:discord.Interaction,m:discord.Member): await i.response.send_message("0",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def clearwarns(i:discord.Interaction,m:discord.Member): await i.response.send_message("cleared",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def nick(i:discord.Interaction,m:discord.Member,n:str): await m.edit(nick=n); await i.response.send_message("ok",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def roleadd(i:discord.Interaction,m:discord.Member,r:discord.Role): await m.add_roles(r); await i.response.send_message("added",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def roleremove(i:discord.Interaction,m:discord.Member,r:discord.Role): await m.remove_roles(r); await i.response.send_message("removed",ephemeral=True)
+@bot.tree.command(guild=g) 
+async def serverinfo(i:discord.Interaction): await i.response.send_message(i.guild.name)
+@bot.tree.command(guild=g) 
+async def userinfo(i:discord.Interaction,m:discord.Member): await i.response.send_message(m.name)
+@bot.tree.command(guild=g) 
+async def avatar(i:discord.Interaction,m:discord.Member): await i.response.send_message(m.display_avatar.url)
+@bot.tree.command(guild=g) 
+async def ping(i:discord.Interaction): await i.response.send_message("pong")
+@bot.tree.command(guild=g) 
+async def say(i:discord.Interaction,t:str): await i.channel.send(t); await i.response.send_message("sent",ephemeral=True)
 
 bot.run(TOKEN)
